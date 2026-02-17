@@ -1,63 +1,75 @@
-import axios from 'axios';
-import { documents, sampleAIResponse, sampleSources, conversations, type ChatMessage, type SourceRef } from '@/data/mockData';
+const API_BASE = "http://127.0.0.1:8000";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+// =======================
+// Upload PDF (Backend)
+// =======================
+export async function uploadPDF(files: File[]) {
+  const formData = new FormData();
 
-const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 30000,
-  headers: { 'Content-Type': 'application/json' },
-});
+  // 1. Loop through all files
+  // 2. Use the key "files" (plural) to match FastAPI
+  files.forEach((file) => {
+    formData.append("files", file);
+  });
 
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    console.error('API Error:', error.message);
-    return Promise.reject(error);
+  const res = await fetch(`${API_BASE}/upload`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Upload failed: ${err}`);
   }
-);
 
-// Mock delay helper
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Mock: GET /documents
-export async function fetchDocuments() {
-  await delay(400);
-  return documents;
+  return res.json();
 }
 
-// Mock: POST /upload
+// =======================
+// Wrapper for UI (Progress)
+// =======================
 export async function uploadDocument(
   file: File,
   onProgress?: (pct: number) => void
-): Promise<{ id: string; name: string; status: string }> {
-  // Simulate upload progress
-  for (let i = 0; i <= 100; i += 10) {
-    await delay(200);
-    onProgress?.(i);
+) {
+  // Fake progress animation
+  if (onProgress) {
+    for (let i = 0; i <= 90; i += 10) {
+      await new Promise((r) => setTimeout(r, 80));
+      onProgress(i);
+    }
   }
-  return { id: `d${Date.now()}`, name: file.name, status: 'processing' };
+
+  // Real upload
+  // FIX IS HERE: We wrap the single 'file' in brackets [ ]
+  const res = await uploadPDF([file]);
+
+  if (onProgress) onProgress(100);
+
+  return {
+    id: Date.now().toString(),
+    name: file.name,
+    status: "indexed",
+    backend: res,
+  };
 }
 
-// Mock: POST /ask — streams character by character via callback
-export async function askQuestion(
-  question: string,
-  onChunk: (text: string) => void,
-  onSources: (sources: SourceRef[]) => void
-): Promise<void> {
-  await delay(800);
-  const chars = sampleAIResponse.split('');
-  for (let i = 0; i < chars.length; i++) {
-    await delay(12);
-    onChunk(chars[i]);
+// =======================
+// Ask AI (RAG)
+// =======================
+export async function askQuestion(question: string) {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ question }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Ask failed: ${err}`);
   }
-  onSources(sampleSources);
-}
 
-// Mock: GET /history
-export async function fetchHistory() {
-  await delay(300);
-  return conversations;
+  return res.json();
 }
-
-export default apiClient;
