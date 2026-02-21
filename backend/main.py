@@ -5,30 +5,19 @@ from typing import List
 import os
 import requests
 import shutil
+import uvicorn
 
-# RAG
+# RAG (Now using Pinecone)
 from rag import load_pdf, chunk_text, build_index, search_docs
 
-
-# -------------------------
-# Load Env
-# -------------------------
 load_dotenv()
 
-
-# -------------------------
-# App
-# -------------------------
 app = FastAPI(
-    title="Brandstori AI Backend",
-    description="RAG-powered PDF Chat System",
-    version="1.0.0"
+    title="Enterprise Knowledge Hub API",
+    description="Multi-Document Cloud RAG System",
+    version="2.0.0"
 )
 
-
-# -------------------------
-# CORS
-# -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,118 +25,89 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# -------------------------
-# API Key
-# -------------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 if not GROQ_API_KEY:
     print("❌ GROQ API KEY NOT LOADED")
 else:
     print("✅ GROQ API KEY LOADED")
 
-
-# -------------------------
-# Groq
-# -------------------------
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-
-# -------------------------
-# Home
-# -------------------------
 @app.get("/")
 def home():
     return {
         "status": "Backend running 🚀",
-        "engine": "Groq + RAG",
-        "version": "1.0"
+        "engine": "Pinecone Cloud + Groq",
+        "version": "2.0"
     }
 
-
-# -------------------------
-# Upload PDFs (MULTI)
-# -------------------------
 @app.post("/upload")
 def upload_pdf(files: List[UploadFile] = File(...)):
-
     os.makedirs("data", exist_ok=True)
-
     total_chunks = 0
     uploaded_files = []
 
     for file in files:
-
         file_path = f"data/{file.filename}"
 
-        # Save
+        # Save temporarily
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Extract
+        # Extract & Chunk
         text = load_pdf(file_path)
-
-        # Chunk
         chunks = chunk_text(text)
 
-        # Index
-        build_index(chunks)
+        # Index to Pinecone Cloud! (Pass the filename so we know where it came from)
+        build_index(chunks, file.filename)
 
         total_chunks += len(chunks)
         uploaded_files.append(file.filename)
+        
+        # Clean up the local file since it is now safely in the cloud
+        os.remove(file_path)
 
     return {
-        "message": "PDFs uploaded & indexed successfully",
+        "message": "PDFs uploaded & permanently indexed in the cloud!",
         "files": uploaded_files,
         "total_chunks": total_chunks
     }
 
-# -------------------------
-# Ask AI
-# -------------------------
 @app.post("/ask")
 def ask_ai(data: dict):
-
     question = data.get("question")
 
     if not question:
-        raise HTTPException(
-            status_code=400,
-            detail="Question is required"
-        )
+        raise HTTPException(status_code=400, detail="Question is required")
 
-    # Search
+    # Search Pinecone Cloud
     contexts = search_docs(question)
 
     if not contexts:
         return {
-            "answer": "No relevant information found in documents.",
+            "answer": "No relevant information found in the uploaded documents.",
             "sources": []
         }
 
-    # Join chunks (Fixed Indentation Here)
+    # Join chunks
     context_text = "\n\n".join(
-        [f"(Page {c['page_number']}) {c['content']}" for c in contexts]
+        [f"(Source: {c['source']} - Page {c['page_number']}) {c['content']}" for c in contexts]
     )
 
-    # Prompt
     prompt = f"""
-You are an AI assistant for answering questions using uploaded documents.
+    You are an Enterprise AI assistant for answering questions using uploaded documents.
+    Answer ONLY from the provided context. If the answer is not in context, say "Not found in documents".
 
-Answer ONLY from the provided context.
-If the answer is not in context, say "Not found in document".
+    --------------------
+    Context:
+    {context_text}
+    --------------------
 
---------------------
-Context:
-{context_text}
---------------------
+    Question:
+    {question}
 
-Question:
-{question}
-
-Answer clearly and professionally:
-"""
+    Answer clearly and professionally:
+    """
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -156,46 +116,30 @@ Answer clearly and professionally:
 
     payload = {
         "model": "llama-3.1-8b-instant",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
+        "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
         "max_tokens": 800
     }
 
     try:
-        response = requests.post(
-            GROQ_URL,
-            json=payload,
-            headers=headers,
-            timeout=60
-        )
+        response = requests.post(GROQ_URL, json=payload, headers=headers, timeout=60)
     except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to connect to AI server"
-        )
+        raise HTTPException(status_code=500, detail="Failed to connect to AI server")
 
     result = response.json()
 
-    print("Groq Raw Response:", result)
-
     if "error" in result:
-        return {
-            "error": result["error"]["message"]
-        }
+        return {"error": result["error"]["message"]}
 
     if "choices" in result:
         return {
             "answer": result["choices"][0]["message"]["content"],
-            # Return the actual context list for citations
             "sources": contexts 
         }
 
-    return {
-        "error": "Unexpected response from Groq",
-        "raw": result
-    }
+    return {"error": "Unexpected response from Groq", "raw": result}
+
+# Railway Port Logic
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
