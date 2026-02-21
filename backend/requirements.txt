@@ -6,5 +6,5 @@ python-dotenv
 requests
 pypdf
 sentence-transformers
-pinecone-client
+pinecone
 python-multipart
